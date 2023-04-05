@@ -13,9 +13,19 @@ import (
 )
 
 type Config struct {
+	App struct {
+		BaseUrl string
+		Port    string
+	}
+
 	Github struct {
 		ClientID     string
 		ClientSecret string
+
+		AccessTokenUrl string
+		LoginUrl       string
+
+		UserDetailUrl string
 	}
 }
 
@@ -78,8 +88,14 @@ func New(cfg Config) (*Default, error) {
 
 	}
 
+	cfg.App.BaseUrl = os.Getenv("APP_BASE_URL")
+	cfg.App.Port = os.Getenv("APP_PORT")
+
 	cfg.Github.ClientID = os.Getenv("OAUTH2_GITHUB_CLIENT_ID")
 	cfg.Github.ClientSecret = os.Getenv("OAUTH2_GITHUB_CLIENT_SECRET")
+	cfg.Github.AccessTokenUrl = os.Getenv("OAUTH2_GITHUB_ACCESS_TOKEN_URL")
+	cfg.Github.LoginUrl = os.Getenv("OAUTH2_GITHUB_LOGIN_URL")
+	cfg.Github.UserDetailUrl = os.Getenv("OAUTH2_GITHUB_USER_DETAIL_URL")
 	e := &Default{config: cfg}
 	return e, nil
 }
@@ -97,7 +113,7 @@ func (e *Default) Execute() {
 			return
 		}
 
-		reqUrl := fmt.Sprintf("http://localhost:8000/api/auth?token=%s", token)
+		reqUrl := fmt.Sprintf("%s/api/auth?token=%s", e.config.App.BaseUrl, token)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
 		if err != nil {
@@ -169,9 +185,42 @@ func (e *Default) Execute() {
 		}
 	})
 
+	http.HandleFunc("/web/auth/oauth2/google", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("accessing /web/auth/oauth2/google ...")
+		reqUrl := fmt.Sprintf("%s/api/auth/oauth2/request?provider=GOOGLE", e.config.App.BaseUrl)
+		log.Printf("calling api %s ...\n", reqUrl)
+		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
+		if err != nil {
+			log.Printf("couldn't parse the query : %v\n", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		req.Header.Set("accept", "application/json")
+
+		res, err := httpClient.Do(req)
+		if err != nil {
+			log.Printf("could not send HTTP request: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		defer res.Body.Close()
+
+		var t OauthRequestResponse
+		if err := json.NewDecoder(res.Body).Decode(&t); err != nil {
+			log.Printf("could not parse JSON response: %v\n", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Location", t.RedirectUrl)
+		w.WriteHeader(http.StatusFound)
+	})
+
 	http.HandleFunc("/web/auth/oauth2/github", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web/auth/oauth2/github ...")
-		reqUrl := fmt.Sprintf("http://localhost:8000/api/auth/oauth2/request")
+		reqUrl := fmt.Sprintf("%s/api/auth/oauth2/request?provider=GITHUB", e.config.App.BaseUrl)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
 		if err != nil {
@@ -212,7 +261,7 @@ func (e *Default) Execute() {
 		}
 		code := r.FormValue("code")
 
-		reqUrl := fmt.Sprintf("http://localhost:8000/api/auth/oauth2/token?code=%s", code)
+		reqUrl := fmt.Sprintf("%s/api/auth/oauth2/token?code=%s", e.config.App.BaseUrl, code)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
 		if err != nil {
@@ -249,8 +298,26 @@ func (e *Default) Execute() {
 
 	http.HandleFunc("/api/auth/oauth2/request", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /api/auth/oauth2/request ...")
+
+		provider := r.URL.Query().Get("provider")
+		if provider == "" {
+			log.Println("redirecting to /web/login cause param provider is empty.")
+			w.Header().Set("Location", "/web/login")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+
+		var redirectUrl string
+		if provider == "GITHUB" {
+			redirectUrl = fmt.Sprintf("%s?client_id=%s", e.config.Github.LoginUrl, e.config.Github.ClientID)
+		} else {
+			log.Printf("provider was not valid : %s\n", provider)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		resp := OauthRequestResponse{
-			RedirectUrl: fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s", e.config.Github.ClientID),
+			RedirectUrl: redirectUrl,
 		}
 
 		jsonInBytes, err := json.Marshal(resp)
@@ -274,7 +341,7 @@ func (e *Default) Execute() {
 		}
 		code := r.FormValue("code")
 
-		reqUrl := fmt.Sprintf("https://github.com/login/oauth/access_token?client_id=%s&client_secret=%s&code=%s",
+		reqUrl := fmt.Sprintf("%s?client_id=%s&client_secret=%s&code=%s", e.config.Github.AccessTokenUrl,
 			e.config.Github.ClientID, e.config.Github.ClientSecret, code)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
@@ -327,7 +394,7 @@ func (e *Default) Execute() {
 			return
 		}
 
-		reqUrl := fmt.Sprintf("https://api.github.com/user")
+		reqUrl := fmt.Sprint(e.config.Github.UserDetailUrl)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
 		if err != nil {
@@ -371,5 +438,5 @@ func (e *Default) Execute() {
 		w.Write(jsonInBytes)
 	})
 
-	http.ListenAndServe(":8000", nil)
+	http.ListenAndServe(fmt.Sprintf(":%s", e.config.App.Port), nil)
 }
