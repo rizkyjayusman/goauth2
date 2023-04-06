@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"strings"
 	"text/template"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 )
 
@@ -26,6 +29,15 @@ type Config struct {
 		LoginUrl       string
 
 		UserDetailUrl string
+	}
+
+	Google struct {
+		LoginUrl    string
+		RedirectURL string
+
+		ClientID     string
+		ClientSecret string
+		Scopes       []string
 	}
 }
 
@@ -96,6 +108,12 @@ func New(cfg Config) (*Default, error) {
 	cfg.Github.AccessTokenUrl = os.Getenv("OAUTH2_GITHUB_ACCESS_TOKEN_URL")
 	cfg.Github.LoginUrl = os.Getenv("OAUTH2_GITHUB_LOGIN_URL")
 	cfg.Github.UserDetailUrl = os.Getenv("OAUTH2_GITHUB_USER_DETAIL_URL")
+
+	cfg.Google.ClientID = os.Getenv("OAUTH2_GOOGLE_CLIENT_ID")
+	cfg.Google.ClientSecret = os.Getenv("OAUTH2_GOOGLE_CLIENT_SECRET")
+	cfg.Google.LoginUrl = os.Getenv("OAUTH2_GOOGLE_LOGIN_URL")
+	cfg.Google.Scopes = []string{"https://www.googleapis.com/auth/userinfo.email"}
+
 	e := &Default{config: cfg}
 	return e, nil
 }
@@ -251,6 +269,10 @@ func (e *Default) Execute() {
 		w.WriteHeader(http.StatusFound)
 	})
 
+	http.HandleFunc("/web/auth/oauth2/google/callback", func(w http.ResponseWriter, r *http.Request) {
+		// TODO :: handle callback
+	})
+
 	http.HandleFunc("/web/auth/oauth2/github/callback", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web/auth/oauth2/github/callback ...")
 		err := r.ParseForm()
@@ -310,6 +332,23 @@ func (e *Default) Execute() {
 		var redirectUrl string
 		if provider == "GITHUB" {
 			redirectUrl = fmt.Sprintf("%s?client_id=%s", e.config.Github.LoginUrl, e.config.Github.ClientID)
+		} else if provider == "GOOGLE" {
+			URL, err := url.Parse(e.config.Google.LoginUrl)
+			if err != nil {
+				log.Printf("couldn't parse google login url: %v\n", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			params := URL.Query()
+			params.Add("client_id", e.config.Google.ClientID)
+			params.Add("scope", strings.Join(e.config.Google.Scopes, " "))
+			params.Add("redirect_uri", fmt.Sprintf("%s/web/auth/oauth2/google/callback", e.config.App.BaseUrl))
+			params.Add("response_type", "code")
+			params.Add("state", uuid.NewString())
+			URL.RawQuery = params.Encode()
+			redirectUrl = URL.String()
+			log.Printf("google oauth2 redirect url : %s\n", redirectUrl)
 		} else {
 			log.Printf("provider was not valid : %s\n", provider)
 			w.WriteHeader(http.StatusInternalServerError)
