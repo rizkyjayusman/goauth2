@@ -3,6 +3,7 @@ module com.rizkyjayusmangoauth2
 go 1.20
 
 require (
+	cloud.google.com/go/compute/metadata v0.2.0 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect

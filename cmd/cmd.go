@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 type Config struct {
@@ -32,12 +34,7 @@ type Config struct {
 	}
 
 	Google struct {
-		LoginUrl    string
-		RedirectURL string
-
-		ClientID     string
-		ClientSecret string
-		Scopes       []string
+		AccessTokenUrl string
 	}
 }
 
@@ -53,6 +50,13 @@ type OAuthAccessResponse struct {
 
 type OauthRequestResponse struct {
 	RedirectUrl string `json:"redirect_url"`
+}
+
+type OauthGoogleUserDetailResponse struct {
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	VerifiedEmail bool   `json:"verified_email"`
+	Picture       string `json:"picture"`
 }
 
 type OauthUserDetailResponse struct {
@@ -94,6 +98,21 @@ type TokenResponse struct {
 	Token string `json:"token"`
 }
 
+type AuthResponse struct {
+	Name string `json:"name"`
+}
+
+var (
+	oauthCfgGoogle = &oauth2.Config{
+		ClientID:     "",
+		ClientSecret: "",
+		RedirectURL:  "http://localhost:8000/web/auth/oauth2/google/callback",
+		Scopes:       []string{"https://www.googleapis.com/auth/userinfo.email"},
+		Endpoint:     google.Endpoint,
+	}
+	oauthStateGoogleStr = ""
+)
+
 func New(cfg Config) (*Default, error) {
 	err := godotenv.Load(".env")
 	if err != nil {
@@ -109,10 +128,12 @@ func New(cfg Config) (*Default, error) {
 	cfg.Github.LoginUrl = os.Getenv("OAUTH2_GITHUB_LOGIN_URL")
 	cfg.Github.UserDetailUrl = os.Getenv("OAUTH2_GITHUB_USER_DETAIL_URL")
 
-	cfg.Google.ClientID = os.Getenv("OAUTH2_GOOGLE_CLIENT_ID")
-	cfg.Google.ClientSecret = os.Getenv("OAUTH2_GOOGLE_CLIENT_SECRET")
-	cfg.Google.LoginUrl = os.Getenv("OAUTH2_GOOGLE_LOGIN_URL")
-	cfg.Google.Scopes = []string{"https://www.googleapis.com/auth/userinfo.email"}
+	cfg.Google.AccessTokenUrl = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+	oauthCfgGoogle.ClientID = os.Getenv("OAUTH2_GOOGLE_CLIENT_ID")
+	oauthCfgGoogle.ClientSecret = os.Getenv("OAUTH2_GOOGLE_CLIENT_SECRET")
+
+	oauthStateGoogleStr = uuid.NewString()
 
 	e := &Default{config: cfg}
 	return e, nil
@@ -127,11 +148,19 @@ func (e *Default) Execute() {
 		if token == "" {
 			log.Println("redirecting to /web/login cause param token is empty.")
 			w.Header().Set("Location", "/web/login")
-			w.WriteHeader(http.StatusFound)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		reqUrl := fmt.Sprintf("%s/api/auth?token=%s", e.config.App.BaseUrl, token)
+		provider := r.URL.Query().Get("provider")
+		if provider == "" {
+			log.Println("redirecting to /web/login cause param provider is empty.")
+			w.Header().Set("Location", "/web/login")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		reqUrl := fmt.Sprintf("%s/api/auth?token=%s&provider=%s", e.config.App.BaseUrl, token, provider)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
 		if err != nil {
@@ -271,6 +300,39 @@ func (e *Default) Execute() {
 
 	http.HandleFunc("/web/auth/oauth2/google/callback", func(w http.ResponseWriter, r *http.Request) {
 		// TODO :: handle callback
+		log.Println("accessing /web/auth/oauth2/github/callback ...")
+		err := r.ParseForm()
+		if err != nil {
+			log.Printf("couldn't parse the query : %v\n", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		code := r.FormValue("code")
+		if code == "" {
+			reason := r.FormValue("error_reason")
+			log.Printf("parameter code was empty cause : %v\n", reason)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		token, err := oauthCfgGoogle.Exchange(oauth2.NoContext, code)
+		if err != nil {
+			log.Printf("couldn't generate token from google oauth2 : %v\n", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("google access token : %s\n" + token.AccessToken)
+		log.Printf("google expired token :  %s\n" + token.Expiry.String())
+		log.Printf("google refresh token : %s\n" + token.RefreshToken)
+
+		redirectUrl := fmt.Sprintf("/web?token=%s&provider=GOOGLE", token.AccessToken)
+		log.Printf("redirecting to %s ...\n", redirectUrl)
+		w.Header().Set("Location", redirectUrl)
+		w.WriteHeader(http.StatusFound)
+
+		// show the error message when its return failed
 	})
 
 	http.HandleFunc("/web/auth/oauth2/github/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +372,7 @@ func (e *Default) Execute() {
 			return
 		}
 
-		redirectUrl := fmt.Sprintf("/web?token=%s", t.Token)
+		redirectUrl := fmt.Sprintf("/web?token=%s&provider=GITHUB", t.Token)
 		log.Printf("redirecting to %s ...\n", redirectUrl)
 		w.Header().Set("Location", redirectUrl)
 		w.WriteHeader(http.StatusFound)
@@ -333,7 +395,7 @@ func (e *Default) Execute() {
 		if provider == "GITHUB" {
 			redirectUrl = fmt.Sprintf("%s?client_id=%s", e.config.Github.LoginUrl, e.config.Github.ClientID)
 		} else if provider == "GOOGLE" {
-			URL, err := url.Parse(e.config.Google.LoginUrl)
+			URL, err := url.Parse(oauthCfgGoogle.Endpoint.AuthURL)
 			if err != nil {
 				log.Printf("couldn't parse google login url: %v\n", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -341,11 +403,11 @@ func (e *Default) Execute() {
 			}
 
 			params := URL.Query()
-			params.Add("client_id", e.config.Google.ClientID)
-			params.Add("scope", strings.Join(e.config.Google.Scopes, " "))
+			params.Add("client_id", oauthCfgGoogle.ClientID)
+			params.Add("scope", strings.Join(oauthCfgGoogle.Scopes, " "))
 			params.Add("redirect_uri", fmt.Sprintf("%s/web/auth/oauth2/google/callback", e.config.App.BaseUrl))
 			params.Add("response_type", "code")
-			params.Add("state", uuid.NewString())
+			params.Add("state", oauthStateGoogleStr)
 			URL.RawQuery = params.Encode()
 			redirectUrl = URL.String()
 			log.Printf("google oauth2 redirect url : %s\n", redirectUrl)
@@ -428,42 +490,86 @@ func (e *Default) Execute() {
 
 		token := r.URL.Query().Get("token")
 		if token == "" {
-			log.Println("unauthorized request")
+			log.Println("unauthorized request cause token was empty")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
-		reqUrl := fmt.Sprint(e.config.Github.UserDetailUrl)
-		log.Printf("calling api %s ...\n", reqUrl)
-		req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
-		if err != nil {
-			log.Printf("could not create HTTP request: %v\n", err)
-			w.WriteHeader(http.StatusBadRequest)
+		provider := r.URL.Query().Get("provider")
+		if provider == "" {
+			log.Println("unauthorized request cause provider was empty")
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
-		req.Header.Set("Accept", "application/vnd.github.v3+json")
-		req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
-		res, err := httpClient.Do(req)
-		if err != nil {
-			log.Printf("could not send HTTP request: %v\n", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		defer res.Body.Close()
-
-		var t OauthUserDetailResponse
-		if res.StatusCode == http.StatusOK {
-			if err := json.NewDecoder(res.Body).Decode(&t); err != nil {
-				fmt.Fprintf(os.Stdout, "could not parse JSON response: %v", err)
+		var t AuthResponse
+		if provider == "GITHUB" {
+			reqUrl := fmt.Sprint(e.config.Github.UserDetailUrl)
+			log.Printf("calling api %s ...\n", reqUrl)
+			req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
+			if err != nil {
+				log.Printf("could not create HTTP request: %v\n", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-		} else {
 
-			log.Printf("status code was : %v\n", res.StatusCode)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+			req.Header.Set("Accept", "application/vnd.github.v3+json")
+			req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
+			res, err := httpClient.Do(req)
+			if err != nil {
+				log.Printf("could not send HTTP request: %v\n", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			defer res.Body.Close()
+
+			var resp OauthUserDetailResponse
+			if res.StatusCode == http.StatusOK {
+				if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+					fmt.Fprintf(os.Stdout, "could not parse JSON response: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+			} else {
+				log.Printf("status code was : %v\n", res.StatusCode)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			t.Name = resp.Name
+		} else if provider == "GOOGLE" {
+			reqUrl := fmt.Sprintf("%s?access_token=%s", e.config.Google.AccessTokenUrl, token)
+			log.Printf("calling api %s ...\n", reqUrl)
+			req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
+			if err != nil {
+				log.Printf("could not create HTTP request: %v\n", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			req.Header.Set("Accept", "application/json")
+			res, err := httpClient.Do(req)
+			if err != nil {
+				log.Printf("could not send HTTP request: %v\n", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			defer res.Body.Close()
+
+			var resp OauthGoogleUserDetailResponse
+			if res.StatusCode == http.StatusOK {
+				if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+					fmt.Fprintf(os.Stdout, "could not parse JSON response: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+			} else {
+				log.Printf("status code was : %v\n", res.StatusCode)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			t.Name = resp.Email
 		}
 
 		jsonInBytes, err := json.Marshal(t)
