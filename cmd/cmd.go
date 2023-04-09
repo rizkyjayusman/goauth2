@@ -8,9 +8,12 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
+	"github.com/golang-jwt/jwt"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"golang.org/x/oauth2"
@@ -19,6 +22,7 @@ import (
 
 type Config struct {
 	App struct {
+		Name    string
 		BaseUrl string
 		Port    string
 	}
@@ -35,6 +39,12 @@ type Config struct {
 
 	Google struct {
 		AccessTokenUrl string
+	}
+
+	JwtToken struct {
+		SigningMethod jwt.SigningMethodHMAC `json:"signing_method"`
+		SecretKey     string                `json:"secret_key"`
+		LifeTime      time.Duration         `json:"life_time"`
 	}
 }
 
@@ -102,6 +112,12 @@ type AuthResponse struct {
 	Name string `json:"name"`
 }
 
+type JwtClaim struct {
+	jwt.StandardClaims
+	ProviderToken string `json:"partner_token"`
+	ProviderName  string `json:"provider_name"`
+}
+
 var (
 	oauthCfgGoogle = &oauth2.Config{
 		ClientID:     "",
@@ -121,6 +137,13 @@ func New(cfg Config) (*Default, error) {
 
 	cfg.App.BaseUrl = os.Getenv("APP_BASE_URL")
 	cfg.App.Port = os.Getenv("APP_PORT")
+	cfg.App.Name = os.Getenv("APP_NAME")
+
+	cfg.JwtToken.SigningMethod = *jwt.SigningMethodHS256
+	cfg.JwtToken.SecretKey = os.Getenv("JWT_TOKEN_SECRET_KEY")
+	if v, err := strconv.Atoi(os.Getenv("")); err == nil {
+		cfg.JwtToken.LifeTime = time.Duration(v*1) * time.Hour
+	}
 
 	cfg.Github.ClientID = os.Getenv("OAUTH2_GITHUB_CLIENT_ID")
 	cfg.Github.ClientSecret = os.Getenv("OAUTH2_GITHUB_CLIENT_SECRET")
@@ -327,7 +350,14 @@ func (e *Default) Execute() {
 		log.Printf("google expired token :  %s\n" + token.Expiry.String())
 		log.Printf("google refresh token : %s\n" + token.RefreshToken)
 
-		redirectUrl := fmt.Sprintf("/web?token=%s&provider=GOOGLE", token.AccessToken)
+		jwtToken, err := createJwtToken(token.AccessToken, "GOOGLE", e)
+		if err != nil {
+			log.Printf("couldn't generate jwt token after get google oauth token : %v\n", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		redirectUrl := fmt.Sprintf("/web?token=%s", jwtToken)
 		log.Printf("redirecting to %s ...\n", redirectUrl)
 		w.Header().Set("Location", redirectUrl)
 		w.WriteHeader(http.StatusFound)
@@ -372,7 +402,14 @@ func (e *Default) Execute() {
 			return
 		}
 
-		redirectUrl := fmt.Sprintf("/web?token=%s&provider=GITHUB", t.Token)
+		jwtToken, err := createJwtToken(t.Token, "GITHUB", e)
+		if err != nil {
+			log.Printf("couldn't generate jwt token after get github oauth token : %v\n", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		redirectUrl := fmt.Sprintf("/web?token=%s", jwtToken)
 		log.Printf("redirecting to %s ...\n", redirectUrl)
 		w.Header().Set("Location", redirectUrl)
 		w.WriteHeader(http.StatusFound)
@@ -495,9 +532,38 @@ func (e *Default) Execute() {
 			return
 		}
 
-		provider := r.URL.Query().Get("provider")
+		jwtToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+			if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("Signing method invalid")
+			} else if method != &e.config.JwtToken.SigningMethod {
+				return nil, fmt.Errorf("Signing method invalid")
+			}
+
+			return e.config.JwtToken.SecretKey, nil
+		})
+
+		if err != nil {
+			log.Println("couldn't parse jwt token")
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := jwtToken.Claims.(jwt.MapClaims)
+		if !ok || !jwtToken.Valid {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		provider := claims["provider_name"]
 		if provider == "" {
 			log.Println("unauthorized request cause provider was empty")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		providerToken := claims["provider_token"]
+		if providerToken == "" {
+			log.Println("unauthorized request cause provider token was empty")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -514,7 +580,7 @@ func (e *Default) Execute() {
 			}
 
 			req.Header.Set("Accept", "application/vnd.github.v3+json")
-			req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
+			req.Header.Set("Authorization", fmt.Sprintf("token %s", providerToken))
 			res, err := httpClient.Do(req)
 			if err != nil {
 				log.Printf("could not send HTTP request: %v\n", err)
@@ -538,7 +604,7 @@ func (e *Default) Execute() {
 
 			t.Name = resp.Name
 		} else if provider == "GOOGLE" {
-			reqUrl := fmt.Sprintf("%s?access_token=%s", e.config.Google.AccessTokenUrl, token)
+			reqUrl := fmt.Sprintf("%s?access_token=%s", e.config.Google.AccessTokenUrl, providerToken)
 			log.Printf("calling api %s ...\n", reqUrl)
 			req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
 			if err != nil {
@@ -584,4 +650,21 @@ func (e *Default) Execute() {
 	})
 
 	http.ListenAndServe(fmt.Sprintf(":%s", e.config.App.Port), nil)
+}
+
+func createJwtToken(token string, provider string, e *Default) (string, error) {
+	claims := JwtClaim{
+		StandardClaims: jwt.StandardClaims{
+			Issuer:    "Oauth2",
+			ExpiresAt: time.Now().Add(e.config.JwtToken.LifeTime).Unix(),
+		},
+		ProviderToken: token,
+		ProviderName:  provider,
+	}
+
+	jwtToken := jwt.NewWithClaims(
+		&e.config.JwtToken.SigningMethod, claims,
+	)
+
+	return jwtToken.SignedString(e.config.JwtToken.SecretKey)
 }
