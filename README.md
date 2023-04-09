@@ -5,7 +5,7 @@ self-learning project about Oauth2 Client.
 # Tech Stack
 
 I used these tech stack for create this project with:
-* Java 8
+* Go 1.20.2
 * [Go default HTTP](https://medium.com/@nate510/don-t-use-go-s-default-http-client-4804cb19f779)
 * OAuth2
 * Swagger 2
