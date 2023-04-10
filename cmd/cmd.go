@@ -141,7 +141,7 @@ func New(cfg Config) (*Default, error) {
 
 	cfg.JwtToken.SigningMethod = jwt.SigningMethodHS256
 	cfg.JwtToken.SecretKey = os.Getenv("JWT_TOKEN_SECRET_KEY")
-	if v, err := strconv.Atoi(os.Getenv("")); err == nil {
+	if v, err := strconv.Atoi(os.Getenv("JWT_TOKEN_LIFETIME")); err == nil {
 		cfg.JwtToken.LifeTime = time.Duration(v*1) * time.Hour
 	}
 
