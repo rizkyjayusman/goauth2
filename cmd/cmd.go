@@ -150,8 +150,7 @@ func New(cfg Config) (*Default, error) {
 	cfg.Github.AccessTokenUrl = os.Getenv("OAUTH2_GITHUB_ACCESS_TOKEN_URL")
 	cfg.Github.LoginUrl = os.Getenv("OAUTH2_GITHUB_LOGIN_URL")
 	cfg.Github.UserDetailUrl = os.Getenv("OAUTH2_GITHUB_USER_DETAIL_URL")
-
-	cfg.Google.AccessTokenUrl = "https://www.googleapis.com/oauth2/v2/userinfo"
+	cfg.Google.AccessTokenUrl = os.Getenv("OAUTH2_GOOGLE_ACCESS_TOKEN_URL")
 
 	oauthCfgGoogle.ClientID = os.Getenv("OAUTH2_GOOGLE_CLIENT_ID")
 	oauthCfgGoogle.ClientSecret = os.Getenv("OAUTH2_GOOGLE_CLIENT_SECRET")
@@ -175,7 +174,7 @@ func (e *Default) Execute() {
 			return
 		}
 
-		reqUrl := fmt.Sprintf("%s/api/auth?token=%s", e.config.App.BaseUrl, token)
+		reqUrl := fmt.Sprintf("%s/api/auth", e.config.App.BaseUrl)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
 		if err != nil {
@@ -185,6 +184,7 @@ func (e *Default) Execute() {
 		}
 
 		req.Header.Set("accept", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 
 		res, err := httpClient.Do(req)
 		if err != nil {
@@ -516,14 +516,20 @@ func (e *Default) Execute() {
 
 	http.HandleFunc("/api/auth", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /api/auth ...")
-
-		token := r.URL.Query().Get("token")
+		token := r.Header.Get("Authorization")
 		if token == "" {
 			log.Println("unauthorized request cause token was empty")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
+		if !strings.HasPrefix(token, "Bearer ") {
+			log.Println("unauthorized request cause token prefix wasn't bearer")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		token = strings.Replace(token, "Bearer ", "", 1)
 		jwtToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
 			if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("Signing method invalid")
