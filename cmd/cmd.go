@@ -42,9 +42,9 @@ type Config struct {
 	}
 
 	JwtToken struct {
-		SigningMethod jwt.SigningMethodHMAC `json:"signing_method"`
-		SecretKey     string                `json:"secret_key"`
-		LifeTime      time.Duration         `json:"life_time"`
+		SigningMethod *jwt.SigningMethodHMAC `json:"signing_method"`
+		SecretKey     string                 `json:"secret_key"`
+		LifeTime      time.Duration          `json:"life_time"`
 	}
 }
 
@@ -114,7 +114,7 @@ type AuthResponse struct {
 
 type JwtClaim struct {
 	jwt.StandardClaims
-	ProviderToken string `json:"partner_token"`
+	ProviderToken string `json:"provider_token"`
 	ProviderName  string `json:"provider_name"`
 }
 
@@ -139,7 +139,7 @@ func New(cfg Config) (*Default, error) {
 	cfg.App.Port = os.Getenv("APP_PORT")
 	cfg.App.Name = os.Getenv("APP_NAME")
 
-	cfg.JwtToken.SigningMethod = *jwt.SigningMethodHS256
+	cfg.JwtToken.SigningMethod = jwt.SigningMethodHS256
 	cfg.JwtToken.SecretKey = os.Getenv("JWT_TOKEN_SECRET_KEY")
 	if v, err := strconv.Atoi(os.Getenv("")); err == nil {
 		cfg.JwtToken.LifeTime = time.Duration(v*1) * time.Hour
@@ -175,15 +175,7 @@ func (e *Default) Execute() {
 			return
 		}
 
-		provider := r.URL.Query().Get("provider")
-		if provider == "" {
-			log.Println("redirecting to /web/login cause param provider is empty.")
-			w.Header().Set("Location", "/web/login")
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		reqUrl := fmt.Sprintf("%s/api/auth?token=%s&provider=%s", e.config.App.BaseUrl, token, provider)
+		reqUrl := fmt.Sprintf("%s/api/auth?token=%s", e.config.App.BaseUrl, token)
 		log.Printf("calling api %s ...\n", reqUrl)
 		req, err := http.NewRequest(http.MethodPost, reqUrl, nil)
 		if err != nil {
@@ -535,15 +527,15 @@ func (e *Default) Execute() {
 		jwtToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
 			if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("Signing method invalid")
-			} else if method != &e.config.JwtToken.SigningMethod {
+			} else if method != e.config.JwtToken.SigningMethod {
 				return nil, fmt.Errorf("Signing method invalid")
 			}
 
-			return e.config.JwtToken.SecretKey, nil
+			return []byte(e.config.JwtToken.SecretKey), nil
 		})
 
 		if err != nil {
-			log.Println("couldn't parse jwt token")
+			log.Printf("couldn't parse jwt token cause : %s\n", err)
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
@@ -663,8 +655,8 @@ func createJwtToken(token string, provider string, e *Default) (string, error) {
 	}
 
 	jwtToken := jwt.NewWithClaims(
-		&e.config.JwtToken.SigningMethod, claims,
+		e.config.JwtToken.SigningMethod, claims,
 	)
 
-	return jwtToken.SignedString(e.config.JwtToken.SecretKey)
+	return jwtToken.SignedString([]byte(e.config.JwtToken.SecretKey))
 }
