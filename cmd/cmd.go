@@ -16,6 +16,7 @@ import (
 	"github.com/golang-jwt/jwt"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/labstack/echo"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -162,15 +163,16 @@ func New(cfg Config) (*Default, error) {
 }
 
 func (e *Default) Execute() {
+	r := echo.New()
 	httpClient := &http.Client{}
 
-	http.HandleFunc("/web", func(w http.ResponseWriter, r *http.Request) {
+	r.GET("/web", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web ...")
 		token := r.URL.Query().Get("token")
 		if token == "" {
 			log.Println("redirecting to /web/login cause param token is empty.")
 			w.Header().Set("Location", "/web/login")
-			w.WriteHeader(http.StatusBadRequest)
+			w.WriteHeader(http.StatusFound)
 			return
 		}
 
@@ -223,9 +225,9 @@ func (e *Default) Execute() {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
-	})
+	})))
 
-	http.HandleFunc("/web/login", func(w http.ResponseWriter, r *http.Request) {
+	r.GET("/web/login", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web/login ...")
 		var filepath = path.Join("web", "views", "login.html")
 		var tmpl, err = template.ParseFiles(filepath)
@@ -245,9 +247,9 @@ func (e *Default) Execute() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-	})
+	})))
 
-	http.HandleFunc("/web/auth/oauth2/google", func(w http.ResponseWriter, r *http.Request) {
+	r.GET("/web/auth/oauth2/google", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web/auth/oauth2/google ...")
 		reqUrl := fmt.Sprintf("%s/api/auth/oauth2/request?provider=GOOGLE", e.config.App.BaseUrl)
 		log.Printf("calling api %s ...\n", reqUrl)
@@ -278,9 +280,9 @@ func (e *Default) Execute() {
 
 		w.Header().Set("Location", t.RedirectUrl)
 		w.WriteHeader(http.StatusFound)
-	})
+	})))
 
-	http.HandleFunc("/web/auth/oauth2/github", func(w http.ResponseWriter, r *http.Request) {
+	r.GET("/web/auth/oauth2/github", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web/auth/oauth2/github ...")
 		reqUrl := fmt.Sprintf("%s/api/auth/oauth2/request?provider=GITHUB", e.config.App.BaseUrl)
 		log.Printf("calling api %s ...\n", reqUrl)
@@ -311,9 +313,9 @@ func (e *Default) Execute() {
 
 		w.Header().Set("Location", t.RedirectUrl)
 		w.WriteHeader(http.StatusFound)
-	})
+	})))
 
-	http.HandleFunc("/web/auth/oauth2/google/callback", func(w http.ResponseWriter, r *http.Request) {
+	r.GET("/web/auth/oauth2/google/callback", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// TODO :: handle callback
 		log.Println("accessing /web/auth/oauth2/github/callback ...")
 		err := r.ParseForm()
@@ -355,9 +357,9 @@ func (e *Default) Execute() {
 		w.WriteHeader(http.StatusFound)
 
 		// show the error message when its return failed
-	})
+	})))
 
-	http.HandleFunc("/web/auth/oauth2/github/callback", func(w http.ResponseWriter, r *http.Request) {
+	r.GET("/web/auth/oauth2/github/callback", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /web/auth/oauth2/github/callback ...")
 		err := r.ParseForm()
 		if err != nil {
@@ -407,9 +409,9 @@ func (e *Default) Execute() {
 		w.WriteHeader(http.StatusFound)
 
 		// show the error message when its return failed
-	})
+	})))
 
-	http.HandleFunc("/api/auth/oauth2/request", func(w http.ResponseWriter, r *http.Request) {
+	r.POST("/api/auth/oauth2/request", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /api/auth/oauth2/request ...")
 
 		provider := r.URL.Query().Get("provider")
@@ -459,9 +461,9 @@ func (e *Default) Execute() {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(jsonInBytes)
-	})
+	})))
 
-	http.HandleFunc("/api/auth/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+	r.POST("/api/auth/oauth2/token", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("accessing /api/auth/oauth2/token ...")
 		err := r.ParseForm()
 		if err != nil {
@@ -512,9 +514,9 @@ func (e *Default) Execute() {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(jsonInBytes)
-	})
+	})))
 
-	http.HandleFunc("/api/auth", func(w http.ResponseWriter, r *http.Request) {
+	r.POST("/api/auth", echo.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("accessing /api/auth ...")
 		token := r.Header.Get("Authorization")
 		if token == "" {
@@ -645,9 +647,9 @@ func (e *Default) Execute() {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(jsonInBytes)
-	})
+	})))
 
-	http.ListenAndServe(fmt.Sprintf(":%s", e.config.App.Port), nil)
+	r.Start(fmt.Sprintf(":%s", e.config.App.Port))
 }
 
 func createJwtToken(token string, provider string, e *Default) (string, error) {
